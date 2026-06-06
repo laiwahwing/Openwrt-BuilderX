@@ -1,8 +1,8 @@
 # 全设备共用的额外勾选包（相对各设备官方 defconfig）
-# 来源: mt2500 menuconfig 选定的第三方应用 + 依赖
+# 来源: ImmortalWrt 官方 feed（packages / luci）内可选包
 # 由 scripts/ci/apply-default-packages.sh 应用到 mt2500 / mt6000 / easepi
 
-## 第三方应用
+## 应用
 bash
 chinadns-ng
 cloudflared

@@ -8,6 +8,8 @@
 | `mt6000` | GL.iNet GL-MT6000 | MediaTek Filogic |
 | `easepi` | 易微联 EasePi R1 | Rockchip RK3568 |
 
+软件包均来自 ImmortalWrt 官方 feed（`packages`、`luci` 等），**不追加第三方 feed**。
+
 ## 使用方法
 
 1. 在 GitHub 仓库 **Actions** 页面选择 **Build OpenWrt**。
@@ -22,18 +24,16 @@ configs/                  # 各设备 .config 预设
   mt2500.config
   mt6000.config
   easepi.config
-  default.packages.txt    # 共用额外软件包清单
+  default.packages.txt    # 共用额外软件包清单（ImmortalWrt 官方源内）
 scripts/ci/
-  setup-feeds.sh          # 追加 passwall / small 等第三方 feed
   devices/                # 设备专属配置微调
   patches/                # 源码补丁（如 EasePi rkbin hash）
 ```
 
 ## 自定义
 
-- **修改软件包**：编辑 `configs/default.packages.txt`，然后运行 `scripts/ci/apply-default-packages.sh <device>` 重新生成对应 `.config`。
+- **修改软件包**：编辑 `configs/default.packages.txt`，然后运行 `scripts/ci/apply-default-packages.sh <device>` 重新生成对应 `.config`（需在 ImmortalWrt 源码树内执行）。
 - **设备专属设置**：在 `scripts/ci/devices/<device>.sh` 中添加 sed / 补丁逻辑。
-- **第三方 feed**：在 `scripts/ci/setup-feeds.sh` 中追加。
 
 ## Credits
 

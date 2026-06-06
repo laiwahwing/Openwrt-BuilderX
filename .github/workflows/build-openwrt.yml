@@ -70,9 +70,6 @@ jobs:
             bash "$script"
           done
 
-      - name: Setup custom feeds
-        run: bash scripts/ci/setup-feeds.sh
-
       - name: Resolve device config
         id: config
         run: |
@@ -92,7 +89,13 @@ jobs:
           fi
           echo "path=$resolved" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare cache directories
+        run: |
+          mkdir -p "${{ env.BUILD_DIR }}/dl"
+          mkdir -p ~/.ccache
+
       - name: Cache downloads and ccache
+        id: cache
         uses: actions/cache@v4
         with:
           path: |
@@ -103,8 +106,18 @@ jobs:
             ${{ runner.os }}-${{ env.DEVICE }}-
             ${{ runner.os }}-
 
+      - name: Cache status
+        run: |
+          if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+            echo "Cache restored for ${{ env.DEVICE }} (dl + ccache)."
+          else
+            echo "No cache yet for ${{ env.DEVICE }} — expected on first successful build."
+            echo "This is not an error; sources will be downloaded fresh."
+          fi
+
       - name: Update and install feeds
         run: |
+          set -euo pipefail
           cd "$BUILD_DIR"
           ./scripts/feeds update -a
           ./scripts/feeds install -a
