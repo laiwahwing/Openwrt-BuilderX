@@ -1,0 +1,1 @@
+# mt6000 共用额外包清单 → configs/default.packages.txt

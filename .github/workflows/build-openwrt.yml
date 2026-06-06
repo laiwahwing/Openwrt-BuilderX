@@ -1,190 +1,211 @@
-#
-# Copyright (c) 2019-2020 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
-#
-# https://github.com/P3TERX/Actions-OpenWrt
-# Description: Build OpenWrt using GitHub Actions
-#
-
 name: Build OpenWrt
 
 on:
-  repository_dispatch:
   workflow_dispatch:
     inputs:
-      ssh:
-        description: 'SSH connection to Actions'
-        required: false
-        default: 'false'
+      device:
+        description: Target device to build
+        required: true
+        default: mt2500
+        type: choice
+        options:
+          - mt2500
+          - mt6000
+          - easepi
+      repo_branch:
+        description: ImmortalWrt branch to compile
+        required: true
+        default: openwrt-25.12
+        type: string
+      upload_release:
+        description: Publish firmware to GitHub Release
+        required: true
+        default: false
+        type: boolean
 
 env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
-  FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: .config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
-  UPLOAD_BIN_DIR: false
-  UPLOAD_FIRMWARE: true
-  UPLOAD_COWTRANSFER: false
-  UPLOAD_WETRANSFER: false
-  UPLOAD_RELEASE: false
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
   TZ: Asia/Shanghai
+  BUILD_DIR: openwrt
+  DEVICE: ${{ inputs.device }}
+  REPO_BRANCH: ${{ inputs.repo_branch }}
+  UPLOAD_RELEASE: ${{ inputs.upload_release }}
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    permissions:
+      contents: write
+      actions: write
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@main
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
 
-    - name: Initialization environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-2004)
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
-        sudo timedatectl set-timezone "$TZ"
-        sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Clone source code
-      working-directory: /workdir
-      run: |
-        df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo timedatectl set-timezone "$TZ"
+          sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE"
 
-    - name: Load custom feeds
-      run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
+      - name: Clone ImmortalWrt source
+        run: |
+          git clone --depth=1 -b "$REPO_BRANCH" "$REPO_URL" "$BUILD_DIR"
 
-    - name: Update feeds
-      run: cd openwrt && ./scripts/feeds update -a
+      - name: Apply source patches
+        run: |
+          for script in scripts/ci/patches/*.sh; do
+            [ -f "$script" ] || continue
+            bash "$script"
+          done
 
-    - name: Install feeds
-      run: cd openwrt && ./scripts/feeds install -a
+      - name: Setup custom feeds
+        run: bash scripts/ci/setup-feeds.sh
 
-    - name: Load custom configuration
-      run: |
-        [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
+      - name: Resolve device config
+        id: config
+        run: |
+          set -euo pipefail
+          case "$DEVICE" in
+            mt2500) resolved="configs/mt2500.config" ;;
+            mt6000) resolved="configs/mt6000.config" ;;
+            easepi) resolved="configs/easepi.config" ;;
+            *)
+              echo "Unknown device: $DEVICE"
+              exit 1
+              ;;
+          esac
+          if [ ! -f "$resolved" ]; then
+            echo "Config not found: $resolved"
+            exit 1
+          fi
+          echo "path=$resolved" >> "$GITHUB_OUTPUT"
 
-    - name: SSH connection to Actions
-      uses: P3TERX/ssh2actions@v1.0.0
-      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
-      env:
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      - name: Cache downloads and ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.BUILD_DIR }}/dl
+            ~/.ccache
+          key: ${{ runner.os }}-${{ env.DEVICE }}-${{ hashFiles(format('configs/{0}.config', env.DEVICE)) }}
+          restore-keys: |
+            ${{ runner.os }}-${{ env.DEVICE }}-
+            ${{ runner.os }}-
 
-    - name: Download package
-      id: package
-      run: |
-        cd openwrt
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+      - name: Update and install feeds
+        run: |
+          cd "$BUILD_DIR"
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    - name: Compile the firmware
-      id: compile
-      run: |
-        cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        echo "::set-output name=status::success"
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+      - name: Apply device config
+        env:
+          CONFIG_PATH: ${{ steps.config.outputs.path }}
+        run: |
+          set -euo pipefail
+          cp "$CONFIG_PATH" "$BUILD_DIR/.config"
 
-    - name: Check space usage
-      if: (!cancelled())
-      run: df -hT
+          if [ -f scripts/ci/post-config.sh ]; then
+            bash scripts/ci/post-config.sh
+          fi
 
-    - name: Upload bin directory
-      uses: actions/upload-artifact@main
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
+          device_script="scripts/ci/devices/${DEVICE}.sh"
+          if [ -f "$device_script" ]; then
+            bash "$device_script"
+          fi
 
-    - name: Organize files
-      id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-      run: |
-        cd openwrt/bin/targets/*/*
-        rm -rf packages
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "::set-output name=status::success"
+          cd "$BUILD_DIR"
+          make defconfig
 
-    - name: Upload firmware directory
-      uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
-      with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}
+          device="$(grep -E '^CONFIG_TARGET_.*DEVICE_.*=y' .config | head -n1 | sed -E 's/.*DEVICE_(.*)=y/\1/')"
+          if [ -z "$device" ]; then
+            echo "No target device selected in config"
+            exit 1
+          fi
 
-    - name: Upload firmware to cowtransfer
-      id: cowtransfer
-      if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
-      run: |
-        curl -fsSL git.io/file-transfer | sh
-        ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
-        echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
-        echo "::set-output name=url::$(cat cowtransfer.log | grep https | cut -f3 -d" ")"
+          echo "DEVICE_NAME=$device" >> "$GITHUB_ENV"
+          echo "FILE_DATE=$(date +%Y%m%d%H%M)" >> "$GITHUB_ENV"
 
-    - name: Upload firmware to WeTransfer
-      id: wetransfer
-      if: steps.organize.outputs.status == 'success' && env.UPLOAD_WETRANSFER == 'true' && !cancelled()
-      run: |
-        curl -fsSL git.io/file-transfer | sh
-        ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
-        echo "::warning file=wetransfer.com::$(cat wetransfer.log | grep https)"
-        echo "::set-output name=url::$(cat wetransfer.log | grep https | cut -f3 -d" ")"
+      - name: Download sources
+        run: |
+          cd "$BUILD_DIR"
+          make download -j"$(nproc)"
+          find dl -size -1024c -exec rm -f {} \;
 
-    - name: Generate release tag
-      id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      run: |
-        echo "::set-output name=release_tag::$(date +"%Y.%m.%d-%H%M")"
-        touch release.txt
-        [ $UPLOAD_COWTRANSFER = true ] && echo "🔗 [Cowtransfer](${{ steps.cowtransfer.outputs.url }})" >> release.txt
-        [ $UPLOAD_WETRANSFER = true ] && echo "🔗 [WeTransfer](${{ steps.wetransfer.outputs.url }})" >> release.txt
-        echo "::set-output name=status::success"
+      - name: Compile firmware
+        id: compile
+        run: |
+          set -euo pipefail
+          cd "$BUILD_DIR"
+          make -j"$(nproc)" || make -j1 V=s
+          echo "status=success" >> "$GITHUB_OUTPUT"
 
-    - name: Upload firmware to release
-      uses: softprops/action-gh-release@v1
-      if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
+      - name: Collect firmware artifacts
+        id: artifacts
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          set -euo pipefail
+          target_dir="$(find "$BUILD_DIR/bin/targets" -mindepth 2 -maxdepth 2 -type d | head -n1)"
+          if [ -z "$target_dir" ]; then
+            echo "No firmware output directory found"
+            exit 1
+          fi
 
-    - name: Delete workflow runs
-      uses: GitRML/delete-workflow-runs@main
-      with:
-        retain_days: 1
-        keep_minimum_runs: 3
+          staging="$RUNNER_TEMP/firmware"
+          mkdir -p "$staging"
 
-    - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@v0.1.0
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 3
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          find "$target_dir" -maxdepth 1 -type f \
+            \( -name '*squashfs-sysupgrade.bin*' \
+            -o -name '*initramfs-kernel.bin*' \
+            -o -name '*.manifest' \
+            -o -name 'sha256sums' \
+            -o -name 'profiles.json' \) \
+            -exec cp -t "$staging" {} +
+
+          if [ -z "$(ls -A "$staging")" ]; then
+            echo "No firmware files matched device: $DEVICE_NAME"
+            find "$target_dir" -maxdepth 1 -type f -exec ls -lh {} \;
+            exit 1
+          fi
+
+          echo "dir=$staging" >> "$GITHUB_OUTPUT"
+          ls -lh "$staging"
+
+      - name: Upload firmware artifact
+        if: steps.artifacts.outputs.dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-${{ env.DEVICE_NAME }}-${{ env.FILE_DATE }}
+          path: ${{ steps.artifacts.outputs.dir }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: env.UPLOAD_RELEASE == 'true' && steps.artifacts.outputs.dir != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.DEVICE_NAME }}-${{ env.FILE_DATE }}
+          name: ImmortalWrt ${{ env.DEVICE_NAME }} (${{ env.FILE_DATE }})
+          files: ${{ steps.artifacts.outputs.dir }}/*
+          generate_release_notes: true
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo "### Build parameters"
+            echo "- Device preset: \`${{ inputs.device }}\`"
+            echo "- Config: \`${{ steps.config.outputs.path }}\`"
+            echo "- ImmortalWrt branch: \`${{ inputs.repo_branch }}\`"
+            echo "- Target profile: \`${{ env.DEVICE_NAME }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

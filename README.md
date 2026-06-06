@@ -1,44 +1,45 @@
-**English** | [中文](https://p3terx.com/archives/build-openwrt-with-github-actions.html)
+# Openwrt-BuilderX
 
-# Actions-OpenWrt
+基于 [ImmortalWrt](https://github.com/immortalwrt/immortalwrt) 的 GitHub Actions 固件编译仓库，支持以下设备：
 
-[![LICENSE](https://img.shields.io/github/license/mashape/apistatus.svg?style=flat-square&label=LICENSE)](https://github.com/P3TERX/Actions-OpenWrt/blob/master/LICENSE)
-![GitHub Stars](https://img.shields.io/github/stars/P3TERX/Actions-OpenWrt.svg?style=flat-square&label=Stars&logo=github)
-![GitHub Forks](https://img.shields.io/github/forks/P3TERX/Actions-OpenWrt.svg?style=flat-square&label=Forks&logo=github)
+| 预设 | 设备 | 目标 |
+|------|------|------|
+| `mt2500` | GL.iNet GL-MT2500 (Airoha) | MediaTek Filogic |
+| `mt6000` | GL.iNet GL-MT6000 | MediaTek Filogic |
+| `easepi` | 易微联 EasePi R1 | Rockchip RK3568 |
 
-A template for building OpenWrt with GitHub Actions
+## 使用方法
 
-## Usage
+1. 在 GitHub 仓库 **Actions** 页面选择 **Build OpenWrt**。
+2. 点击 **Run workflow**，选择目标设备（`mt2500` / `mt6000` / `easepi`）。
+3. 可选：修改 ImmortalWrt 分支（默认 `openwrt-25.12`）或勾选发布 Release。
+4. 编译完成后，在 Actions 运行记录的 **Artifacts** 中下载固件。
 
-- Click the [Use this template](https://github.com/P3TERX/Actions-OpenWrt/generate) button to create a new repository.
-- Generate `.config` files using [Lean's OpenWrt](https://github.com/coolsnowwolf/lede) source code. ( You can change it through environment variables in the workflow file. )
-- Push `.config` file to the GitHub repository.
-- Select `Build OpenWrt` on the Actions page.
-- Click the `Run workflow` button.
-- When the build is complete, click the `Artifacts` button in the upper right corner of the Actions page to download the binaries.
+## 目录结构
 
-## Tips
+```
+configs/                  # 各设备 .config 预设
+  mt2500.config
+  mt6000.config
+  easepi.config
+  default.packages.txt    # 共用额外软件包清单
+scripts/ci/
+  setup-feeds.sh          # 追加 passwall / small 等第三方 feed
+  devices/                # 设备专属配置微调
+  patches/                # 源码补丁（如 EasePi rkbin hash）
+```
 
-- It may take a long time to create a `.config` file and build the OpenWrt firmware. Thus, before create repository to build your own firmware, you may check out if others have already built it which meet your needs by simply [search `Actions-Openwrt` in GitHub](https://github.com/search?q=Actions-openwrt).
-- Add some meta info of your built firmware (such as firmware architecture and installed packages) to your repository introduction, this will save others' time.
+## 自定义
+
+- **修改软件包**：编辑 `configs/default.packages.txt`，然后运行 `scripts/ci/apply-default-packages.sh <device>` 重新生成对应 `.config`。
+- **设备专属设置**：在 `scripts/ci/devices/<device>.sh` 中添加 sed / 补丁逻辑。
+- **第三方 feed**：在 `scripts/ci/setup-feeds.sh` 中追加。
 
 ## Credits
 
-- [Microsoft Azure](https://azure.microsoft.com)
-- [GitHub Actions](https://github.com/features/actions)
-- [OpenWrt](https://github.com/openwrt/openwrt)
-- [Lean's OpenWrt](https://github.com/coolsnowwolf/lede)
-- [tmate](https://github.com/tmate-io/tmate)
-- [mxschmitt/action-tmate](https://github.com/mxschmitt/action-tmate)
-- [csexton/debugger-action](https://github.com/csexton/debugger-action)
-- [Cowtransfer](https://cowtransfer.com)
-- [WeTransfer](https://wetransfer.com/)
-- [Mikubill/transfer](https://github.com/Mikubill/transfer)
-- [softprops/action-gh-release](https://github.com/softprops/action-gh-release)
-- [ActionsRML/delete-workflow-runs](https://github.com/ActionsRML/delete-workflow-runs)
-- [dev-drprasad/delete-older-releases](https://github.com/dev-drprasad/delete-older-releases)
-- [peter-evans/repository-dispatch](https://github.com/peter-evans/repository-dispatch)
+- [ImmortalWrt](https://github.com/immortalwrt/immortalwrt)
+- [P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt)（原始模板）
 
 ## License
 
-[MIT](https://github.com/P3TERX/Actions-OpenWrt/blob/main/LICENSE) © [**P3TERX**](https://p3terx.com)
+[MIT](LICENSE)
