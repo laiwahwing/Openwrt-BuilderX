@@ -14,8 +14,11 @@
 
 1. 在 GitHub 仓库 **Actions** 页面选择 **Build OpenWrt**。
 2. 点击 **Run workflow**，选择目标设备（`mt2500` / `mt6000` / `easepi`）。
-3. 可选：修改 ImmortalWrt 分支（默认 `openwrt-25.12`）或勾选发布 Release。
-4. 编译完成后，在 Actions 运行记录的 **Artifacts** 中下载固件。
+3. 可选：修改 ImmortalWrt 分支（默认 `openwrt-25.12`）。默认会发布到 **GitHub Release**。
+4. 编译成功后下载固件：
+   - **Actions Artifacts**（推荐）：打开该次 workflow run 页面，**滚到最底部** → **Artifacts** → 下载 `firmware-<device>-<时间戳>.zip`
+   - **GitHub Releases**：仓库 **Releases** 页，附件中含 `FLASH-*` 或 `*sysupgrade.img.gz` / `*sysupgrade.bin`
+   - EasePi 刷机文件：`*-sysupgrade.img.gz`；MT2500/MT6000：`*-sysupgrade.bin`
 
 ## 目录结构
 

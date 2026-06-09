@@ -20,7 +20,7 @@ on:
       upload_release:
         description: Publish firmware to GitHub Release
         required: true
-        default: false
+        default: true
         type: boolean
 
 env:
@@ -38,6 +38,9 @@ jobs:
     permissions:
       contents: write
       actions: write
+    outputs:
+      artifact_name: firmware-${{ env.DEVICE }}-${{ env.FILE_DATE }}
+      release_tag: ${{ env.DEVICE_NAME }}-${{ env.FILE_DATE }}
 
     steps:
       - name: Free disk space
@@ -169,39 +172,88 @@ jobs:
         if: steps.compile.outputs.status == 'success'
         run: |
           set -euo pipefail
-          target_dir="$(find "$BUILD_DIR/bin/targets" -mindepth 2 -maxdepth 2 -type d | head -n1)"
-          if [ -z "$target_dir" ]; then
-            echo "No firmware output directory found"
+          shopt -s nullglob
+
+          mapfile -t target_dirs < <(find "$BUILD_DIR/bin/targets" -mindepth 2 -maxdepth 2 -type d | sort)
+          if ((${#target_dirs[@]} == 0)); then
+            echo "No firmware output directory found under $BUILD_DIR/bin/targets"
             exit 1
           fi
 
-          staging="$RUNNER_TEMP/firmware"
+          target_dir=""
+          for d in "${target_dirs[@]}"; do
+            if compgen -G "$d/*${DEVICE_NAME}*" > /dev/null; then
+              target_dir="$d"
+              break
+            fi
+          done
+          if [ -z "$target_dir" ]; then
+            target_dir="${target_dirs[0]}"
+          fi
+
+          staging="$GITHUB_WORKSPACE/firmware-artifacts"
+          rm -rf "$staging"
           mkdir -p "$staging"
 
-          find "$target_dir" -maxdepth 1 -type f \
-            \( -name '*squashfs-sysupgrade.bin*' \
-            -o -name '*initramfs-kernel.bin*' \
-            -o -name '*.manifest' \
-            -o -name 'sha256sums' \
-            -o -name 'profiles.json' \) \
-            -exec cp -t "$staging" {} +
+          echo "Firmware output directory: $target_dir"
+          ls -lah "$target_dir"
 
-          if [ -z "$(ls -A "$staging")" ]; then
-            echo "No firmware files matched device: $DEVICE_NAME"
-            find "$target_dir" -maxdepth 1 -type f -exec ls -lh {} \;
+          for f in "$target_dir"/*; do
+            [ -f "$f" ] || continue
+            cp -v "$f" "$staging/"
+          done
+
+          flashable="$(find "$staging" -maxdepth 1 -type f \( \
+            -name '*sysupgrade.img.gz*' \
+            -o -name '*sysupgrade.bin*' \
+            -o -name '*sysupgrade.itb*' \
+            -o -name '*squashfs-sysupgrade.bin*' \) | head -n1)"
+
+          if [ -z "$flashable" ]; then
+            echo "No flashable sysupgrade image found for device: $DEVICE_NAME"
+            echo "Files in target directory:"
+            find "$target_dir" -type f -exec ls -lh {} \;
             exit 1
           fi
 
+          cp -v "$flashable" "$staging/FLASH-${DEVICE_NAME}-${FILE_DATE}-$(basename "$flashable")"
+
           echo "dir=$staging" >> "$GITHUB_OUTPUT"
+          echo "flashable=$flashable" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=firmware-${{ inputs.device }}-${{ env.FILE_DATE }}" >> "$GITHUB_OUTPUT"
+          echo "Collected artifacts:"
           ls -lh "$staging"
 
       - name: Upload firmware artifact
-        if: steps.artifacts.outputs.dir != ''
+        id: upload
+        if: steps.compile.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: immortalwrt-${{ env.DEVICE_NAME }}-${{ env.FILE_DATE }}
-          path: ${{ steps.artifacts.outputs.dir }}
+          name: firmware-${{ inputs.device }}-${{ env.FILE_DATE }}
+          path: firmware-artifacts/
+          compression-level: 0
+          retention-days: 90
           if-no-files-found: error
+
+      - name: Prepare release notes
+        if: env.UPLOAD_RELEASE == 'true' && steps.artifacts.outputs.dir != ''
+        id: release
+        run: |
+          set -euo pipefail
+          staging="${{ steps.artifacts.outputs.dir }}"
+          {
+            echo "## Firmware"
+            echo
+            for f in "$staging"/*; do
+              [ -f "$f" ] || continue
+              echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"
+            done
+            echo
+            echo "## Flash"
+            echo "- **EasePi R1 (rockchip):** upload \`*-sysupgrade.img.gz\` and run \`sysupgrade -n -F /tmp/firmware.bin\`"
+            echo "- **MT2500 / MT6000 (mediatek):** upload \`*-sysupgrade.bin\` and run \`sysupgrade -n /tmp/firmware.bin\`"
+          } > "$RUNNER_TEMP/release-notes.md"
+          echo "notes=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         if: env.UPLOAD_RELEASE == 'true' && steps.artifacts.outputs.dir != ''
@@ -209,8 +261,9 @@ jobs:
         with:
           tag_name: ${{ env.DEVICE_NAME }}-${{ env.FILE_DATE }}
           name: ImmortalWrt ${{ env.DEVICE_NAME }} (${{ env.FILE_DATE }})
+          body_path: ${{ steps.release.outputs.notes }}
           files: ${{ steps.artifacts.outputs.dir }}/*
-          generate_release_notes: true
+          fail_on_unmatched_files: true
 
       - name: Build summary
         if: always()
@@ -221,4 +274,14 @@ jobs:
             echo "- Config: \`${{ steps.config.outputs.path }}\`"
             echo "- ImmortalWrt branch: \`${{ inputs.repo_branch }}\`"
             echo "- Target profile: \`${{ env.DEVICE_NAME }}\`"
+            echo
+            echo "### Download firmware"
+            if [ "${{ steps.compile.outputs.status }}" = "success" ]; then
+              echo "1. Scroll to the **bottom** of this workflow run page"
+              echo "2. Under **Artifacts**, download \`firmware-${{ inputs.device }}-${{ env.FILE_DATE }}\`"
+              echo "3. Unzip and flash the file named \`FLASH-*\` (or \`*sysupgrade.img.gz\` / \`*sysupgrade.bin\`)"
+              if [ "${{ inputs.upload_release }}" = "true" ]; then
+                echo "4. **GitHub Release:** [${{ env.DEVICE_NAME }}-${{ env.FILE_DATE }}](https://github.com/${{ github.repository }}/releases/tag/${{ env.DEVICE_NAME }}-${{ env.FILE_DATE }})"
+              fi
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
