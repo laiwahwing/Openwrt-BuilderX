@@ -118,6 +118,13 @@ jobs:
             echo "This is not an error; sources will be downloaded fresh."
           fi
 
+      # Parallel Go builds use -modcacherw on dl/go-mod-cache; a restored or
+      # partially-written cache breaks packages like frp (missing golib/* subpaths).
+      - name: Reset Go module cache
+        run: |
+          rm -rf "${{ env.BUILD_DIR }}/dl/go-mod-cache"
+          mkdir -p "${{ env.BUILD_DIR }}/dl/go-mod-cache"
+
       - name: Update and install feeds
         run: |
           set -euo pipefail
@@ -161,6 +168,9 @@ jobs:
 
       - name: Compile firmware
         id: compile
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+          GOSUMDB: sum.golang.org
         run: |
           set -euo pipefail
           cd "$BUILD_DIR"
@@ -285,3 +295,8 @@ jobs:
               fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Keep tarball downloads in Actions cache; never persist go-mod-cache (see reset step above).
+      - name: Strip go-mod-cache before cache save
+        if: always()
+        run: rm -rf "${{ env.BUILD_DIR }}/dl/go-mod-cache"
